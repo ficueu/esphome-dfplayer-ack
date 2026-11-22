@@ -1,0 +1,64 @@
+esphome:
+  name: dfa-busy
+  includes: [file_busy_pin.h]
+  on_boot:
+    priority: -100
+    then:
+      - lambda: 'id(odtwarzacz).set_busy_pin(new FileBusyPin());'
+      - script.execute: scenariusz
+
+host:
+  mac_address: "06:35:69:ab:f6:7a"
+
+logger:
+  level: DEBUG
+
+external_components:
+  - source: {type: local, path: components}
+    components: [dfplayer_ack]
+
+uart:
+  id: uart_mp3
+  port: ${port}
+  baud_rate: 9600
+
+dfplayer_ack:
+  id: odtwarzacz
+  uart_id: uart_mp3
+  busy_pin: {number: 1, inverted: true}
+  ack_timeout: 300ms
+  verify_timeout: 1000ms
+  retry_count: {name: retries}
+  failed_count: {name: failed}
+  playing: {name: playing}
+  on_command_failed:
+    - logger.log:
+        format: "EVENT failed cmd=0x%02X error=0x%02X (%s)"
+        args: [cmd, error, 'id(odtwarzacz).error_to_str(error)']
+
+script:
+  - id: scenariusz
+    then:
+      - delay: 2s
+      - logger.log: "STEP B1 ACK lost, BUSY goes low before ack_timeout"
+      - dfplayer_ack.play_folder: {folder: 2, file: 1}
+      - delay: 2500ms
+      - logger.log: "STEP B2 ACK lost, BUSY goes low after ack_timeout (during retry wait)"
+      - dfplayer_ack.play_folder: {folder: 2, file: 2}
+      - delay: 2500ms
+      - logger.log: "STEP B3 normal play + stop"
+      - dfplayer_ack.play_folder: {folder: 2, file: 3}
+      - delay: 600ms
+      - dfplayer_ack.stop:
+      - delay: 1500ms
+      - logger.log: "STEP B4 next (non-idempotent) with lost ACK, BUSY proves it ran"
+      - dfplayer_ack.play_next:
+      - delay: 2500ms
+      - logger.log: "STEP B5 ACK ok but BUSY never goes low"
+      - dfplayer_ack.play_mp3: 5
+      - delay: 6s
+      - lambda: |-
+          ESP_LOGI("test", "DONE retries=%u failed=%u", (unsigned) id(odtwarzacz).get_retry_count(),
+                   (unsigned) id(odtwarzacz).get_failed_count());
+      - delay: 200ms
+      - lambda: 'exit(0);'

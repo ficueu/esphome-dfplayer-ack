@@ -1,0 +1,97 @@
+substitutions:
+  modul: mod99-dzwiek
+
+esphome:
+  name: ${modul}
+  on_boot:
+    priority: -100
+    then:
+      # no delay needed - the queue holds commands until the module answers (init_timeout)
+      - dfplayer_ack.set_volume: 22
+
+esp32:
+  board: esp32-s3-devkitc-1
+  framework:
+    type: esp-idf
+
+logger:
+  level: DEBUG          # VERBOSE shows ACK latency per command, VERY_VERBOSE dumps raw frames
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+mqtt:
+  broker: 10.120.0.10
+  on_json_message:
+    # {"folder": 2, "file": 7}   or   {"folder": 2, "file": 7, "volume": 20}
+    - topic: ${modul}/audio/play
+      then:
+        - if:
+            condition:
+              lambda: 'return x.containsKey("volume");'
+            then:
+              - dfplayer_ack.set_volume: !lambda 'return x["volume"];'
+        - dfplayer_ack.play_folder:
+            folder: !lambda 'return x["folder"];'
+            file: !lambda 'return x["file"];'
+  on_message:
+    - topic: ${modul}/audio/stop
+      then:
+        - dfplayer_ack.stop:
+
+external_components:
+  - source: github://ficueu/esphome-dfplayer-ack
+    components: [dfplayer_ack]
+
+uart:
+  id: uart_mp3
+  tx_pin: GPIO17
+  rx_pin: GPIO18
+  baud_rate: 9600
+
+dfplayer_ack:
+  id: odtwarzacz
+  uart_id: uart_mp3
+  busy_pin:
+    number: GPIO8
+    mode:
+      input: true
+      pullup: true        # BUSY: LOW = playing; don't set inverted
+  max_retries: 3
+  ack_timeout: 300ms
+  retry_delay: 100ms
+  command_interval: 50ms
+  verify_timeout: 1500ms  # how long BUSY may take to change after the ACK
+
+  retry_count:
+    name: "Audio retries"
+  failed_count:
+    name: "Audio failed commands"
+  last_error:
+    name: "Audio last error"
+  reset_count:
+    name: "Audio module resets"
+  playing:
+    name: "Audio playing"
+    filters:
+      - delayed_off: 100ms   # BUSY blips high between tracks
+
+  on_finished_playback:
+    - mqtt.publish_json:
+        topic: ${modul}/audio/finished
+        payload: |-
+          root["track"] = track;
+
+  on_command_failed:
+    - mqtt.publish_json:
+        topic: ${modul}/audio/error
+        payload: |-
+          root["cmd"] = cmd;
+          root["error"] = error;
+          root["text"] = id(odtwarzacz).error_to_str(error);
+
+  on_module_reset:
+    - logger.log:
+        level: WARN
+        format: "DFPlayer zresetowal sie - zasilanie?"

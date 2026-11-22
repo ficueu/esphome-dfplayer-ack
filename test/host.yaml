@@ -1,0 +1,103 @@
+esphome:
+  name: dfa-host
+  on_boot:
+    priority: -100
+    then:
+      - script.execute: scenariusz
+
+host:
+  mac_address: "06:35:69:ab:f6:79"
+
+logger:
+  level: VERBOSE
+  logs:
+    scheduler: INFO
+    component: INFO
+
+external_components:
+  - source:
+      type: local
+      path: components
+    components: [dfplayer_ack]
+
+uart:
+  id: uart_mp3
+  port: ${port}
+  baud_rate: 9600
+
+dfplayer_ack:
+  id: odtwarzacz
+  uart_id: uart_mp3
+  verify_playback: query
+  max_retries: 3
+  ack_timeout: 300ms
+  verify_timeout: 1000ms
+  init_timeout: 3s
+  retry_count:
+    name: retries
+  failed_count:
+    name: failed
+  last_error:
+    name: last_error
+  reset_count:
+    name: resets
+  playing:
+    name: playing
+  on_finished_playback:
+    - logger.log:
+        format: "EVENT finished track=%u"
+        args: [track]
+  on_command_failed:
+    - logger.log:
+        format: "EVENT failed cmd=0x%02X error=0x%02X (%s)"
+        args: [cmd, error, 'id(odtwarzacz).error_to_str(error)']
+  on_module_reset:
+    - logger.log: "EVENT module_reset"
+
+script:
+  - id: scenariusz
+    then:
+      - logger.log: "STEP 1 boot: volume before module is up"
+      - dfplayer_ack.set_volume: 20
+      - dfplayer_ack.set_eq: ROCK
+      - delay: 4s
+      - logger.log: "STEP 2 play, first ACK dropped"
+      - dfplayer_ack.play_folder: {folder: 1, file: 1}
+      - delay: 3s
+      - logger.log: "STEP 3 track not found"
+      - dfplayer_ack.play_folder: {folder: 99, file: 1}
+      - delay: 2s
+      - logger.log: "STEP 4 next with lost ACK (non-idempotent)"
+      - dfplayer_ack.play_next:
+      - delay: 2s
+      - logger.log: "STEP 5 late ACK"
+      - dfplayer_ack.set_volume: 21
+      - delay: 2s
+      - logger.log: "STEP 6 corrupted ACK checksum"
+      - dfplayer_ack.set_volume: 22
+      - delay: 2s
+      - logger.log: "STEP 7 module never ACKs -> fail after retries"
+      - dfplayer_ack.set_volume: 23
+      - delay: 4s
+      - logger.log: "STEP 8 burst + coalesce + stop verify"
+      - dfplayer_ack.play_folder: {folder: 1, file: 2}
+      - dfplayer_ack.set_volume: 10
+      - dfplayer_ack.set_volume: 11
+      - dfplayer_ack.set_volume: 12
+      - dfplayer_ack.stop:
+      - delay: 4s
+      - logger.log: "STEP 9 brown-out reset while playing"
+      - dfplayer_ack.play_folder: {folder: 1, file: 3}
+      - delay: 5s
+      - logger.log: "STEP 10 module busy error then ok"
+      - dfplayer_ack.play_mp3: 4
+      - delay: 4s
+      - logger.log: "STEP 11 playback never starts -> not confirmed"
+      - dfplayer_ack.play_mp3: 5
+      - delay: 8s
+      - lambda: |-
+          ESP_LOGI("test", "DONE retries=%u failed=%u resets=%u queue=%u",
+                   (unsigned) id(odtwarzacz).get_retry_count(), (unsigned) id(odtwarzacz).get_failed_count(),
+                   (unsigned) id(odtwarzacz).get_reset_count(), (unsigned) id(odtwarzacz).queue_length());
+      - delay: 200ms
+      - lambda: 'exit(0);'
